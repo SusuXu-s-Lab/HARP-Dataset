@@ -13,15 +13,35 @@ event histories. Together these enable post-disaster housing recovery to be
 analyzed as a temporally sequenced and spatially interdependent diffusion
 process.
 
-| File | Hurricane | Region | Year | Communities | Parcels |
-|------|-----------|--------|------|-------------|---------|
-| `harp_ian.npz` | Ian | Lee County, FL | 2022 | 187 | 69,145 |
+| Files | Hurricane | Region | Year | Communities | Parcels |
+|-------|-----------|--------|------|-------------|---------|
+| `harp_ian_part01.npz` … `harp_ian_part04.npz` | Ian | Lee County, FL | 2022 | 422 | 202,926 |
 | `harp_ida.npz` | Ida | Orleans Parish, LA | 2021 | 382 | 121,130 |
-| `harp_harvey.npz` | Harvey | Harris County, TX | 2017 | 1,992 | 1,016,927 |
+| `harp_harvey_part01.npz` … `harp_harvey_part10.npz` | Harvey | Harris County, TX | 2017 | 1,992 | 1,016,927 |
 
-Each file is a single NumPy archive. Records are organized by **community**
+Each storm is one dataset in NumPy `.npz` form. Records are organized by **community**
 (a Census block group); within a community, each row is a single **parcel**
 (a household / residential building).
+
+
+### Files to download
+
+Ian (156 MiB) and Harvey (698 MiB) are past GitHub's 100 MiB per-file limit, so each
+ships as numbered parts — **four for Ian, ten for Harvey**. Ida fits in one file.
+Take **every** part of a storm: a missing part does not raise an error by itself,
+it just silently yields fewer communities, so check the count before you use the
+data (the loader below does this for you).
+
+| Storm | Files | Largest file | Total |
+|-------|-------|--------------|-------|
+| Ian | `harp_ian_part01.npz` … `harp_ian_part04.npz` (4 parts) | 48 MiB | 154 MiB |
+| Ida | `harp_ida.npz` (1 file) | 88 MiB | 88 MiB |
+| Harvey | `harp_harvey_part01.npz` … `harp_harvey_part10.npz` (10 parts) | 78 MiB | 698 MiB |
+
+Nothing else is needed — the loader below is self-contained. Splitting is a pure
+container operation: the cut falls between whole communities, and no array is
+re-typed, re-scaled, or re-ordered, so the parts reassemble into a dataset
+identical to the unsplit original element for element.
 
 **License:** Creative Commons Attribution-NoDerivatives 4.0 International
 (CC BY-ND 4.0).
@@ -30,11 +50,44 @@ Each file is a single NumPy archive. Records are organized by **community**
 
 ## Loading
 
+Copy this loader into your own code. It reads all three storms the same way,
+reassembling Ian's and Harvey's parts and opening Ida's single file, and it
+refuses to return a partial dataset.
+
 ```python
+import glob
 import numpy as np
 
-d = np.load("harp_ian.npz", allow_pickle=True)      # allow_pickle required
-meta   = d["meta"].item()                            # metadata dictionary
+N_PARTS = {"ian": 4, "ida": 1, "harvey": 10}   # expected files per storm
+
+def load_harp(storm, directory="."):
+    files = sorted(glob.glob(f"{directory}/harp_{storm}_part*.npz")) \
+            or sorted(glob.glob(f"{directory}/harp_{storm}.npz"))
+    if len(files) != N_PARTS[storm]:                       # guards against a
+        raise FileNotFoundError(                           # missing download
+            f"{storm}: expected {N_PARTS[storm]} file(s), found {len(files)}")
+
+    chunks, meta, time_index = [], None, None
+    for f in files:
+        z = np.load(f, allow_pickle=True)                  # object arrays inside
+        chunks.append(z["communities"])
+        if meta is None:
+            meta, time_index = z["meta"].item(), z["time_index"]
+
+    # 'part'/'n_parts'/'cbgs' describe one shard, not the reassembled dataset
+    meta = {k: v for k, v in meta.items()
+            if k not in ("part", "n_parts", "cbgs")}
+    communities = np.concatenate(chunks)
+
+    assert len(communities) == meta["n_communities"], "incomplete dataset"
+    return {"communities": communities, "meta": meta, "time_index": time_index}
+```
+
+Then:
+
+```python
+d = load_harp("ian")                                 # "ian" / "ida" / "harvey"
+meta   = d["meta"]                                   # metadata dictionary
 months = d["time_index"]                             # e.g. ['2021-01', ..., '2023-10']
 t0 = meta["t_hurricane"]                             # months[:t0] pre-landfall, months[t0:] post
 
@@ -53,11 +106,30 @@ for comm in d["communities"]:
     repair = comm["repair"]    # e.g. repair["lee_statuses"], repair["fema_applied_dates"]
 ```
 
-`d["communities"]` is an object array of dicts and `meta = d["meta"].item()`
-recovers the metadata dictionary; both require `allow_pickle=True`. Within a
-community, `N` is the number of parcels and `T` the number of months. All
-per-parcel arrays (`H`, `damage`, and both axes of `A`) share a common
-row order, so index `j` denotes the same parcel throughout.
+The two checks matter. Parts carry no cross-file bookkeeping, so a storm loaded
+from an incomplete set of files would otherwise return fewer communities without
+raising anything: dropping one of Ian's four parts silently yields 303 communities
+instead of 422. The file-count test catches that up front, and the final assertion
+re-checks the assembled total against `meta['n_communities']`, which every part
+records for the whole storm.
+
+Ida, being a single file, also opens directly with NumPy — `allow_pickle=True` is
+required because `communities` is an object array of dicts and `meta` a 0-d object
+array:
+
+```python
+d = np.load("harp_ida.npz", allow_pickle=True)
+meta = d["meta"].item()
+```
+
+A single part of Ian or Harvey opens the same way and is self-describing, carrying
+the full `meta` plus `part`, `n_parts`, and `cbgs` (the block groups in that part).
+Its `communities` array holds only that part's communities, so go through the
+loader above unless you deliberately want one shard.
+
+Within a community, `N` is the number of parcels and `T` the number of months.
+All per-parcel arrays (`H`, `damage`, and both axes of `A`) share a common row
+order, so index `j` denotes the same parcel throughout.
 
 ---
 
@@ -100,7 +172,7 @@ in the **Appendix** at the end of this file.
   parcels of a community, quantifying how households' sale and repair decisions
   influence one another; it is inferred from event histories under the decision
   diffusion framework of the companion study. Networks are provided for the
-  communities used in model training (178/187 for Ian, 348/382 for Ida,
+  communities used in model training (405/422 for Ian, 348/382 for Ida,
   1,652/1,992 for Harvey); other communities omit the `A` field but retain all
   remaining fields.
 
@@ -111,10 +183,14 @@ in the **Appendix** at the end of this file.
 `damage` is an `(N, D)` array; column `i` is `meta['damage_fields'][i]`. Columns
 are **storm-specific**: the FEMA columns come from public FEMA / DesignSafe damage
 assessments, the `nhc_*` columns from National Hurricane Center storm-surge
-products (Ida), and `*_AerialDamaged` is an in-house blue-tarp detection on public
-NAIP imagery. Fully-empty columns are dropped, so `D` differs by storm. For
+products (Ida), and `*_AerialDamaged` is an in-house detection on public NAIP
+imagery — a blue-tarp colour rule for Ian, and its union with a fine-tuned
+change-detection model for Ida. Fully-empty columns are dropped, so `D` differs
+by storm. For
 categorical / ordinal codes (`*_DamageLevel`, `*_Occupancy`, `nhc_*_category`) a
-value of `0` is a baseline / unknown class.
+value of `0` is a baseline / unknown class. A `0` in `*_AerialDamaged` means
+the parcel was not flagged, which also covers parcels lying outside the imagery
+the detector ran on; for Ian that is 21,271 of the 202,926 parcels.
 
 | column | storms | description |
 |--------|--------|-------------|
@@ -123,7 +199,7 @@ value of `0` is a baseline / unknown class.
 | `<storm>_EstLoss` | Ian, Ida, Harvey | Estimated loss — **Ian: real USD**; **Ida / Harvey: ordinal severity code** |
 | `<storm>_Occupancy` | Ian, Ida | Occupancy type (`single_family` / `multi_family` / `manufactured_home`), categorical code |
 | `<storm>_DamageLevel` | Ian, Ida, Harvey | Damage severity level; event-specific ordinal code |
-| `<storm>_AerialDamaged` | Ian, Ida | `0/1` damage flag from aerial blue-tarp detection on NAIP imagery |
+| `<storm>_AerialDamaged` | Ian, Ida | `0/1` damage flag from aerial detection on NAIP imagery (Ian: blue tarps; Ida: blue tarps or a fine-tuned change-detection model) |
 | `nhc_surge_category` | Ida | NHC storm-surge category (ordinal) |
 | `nhc_surge_depth_ft` | Ida | NHC modeled storm-surge depth (feet) |
 | `nhc_tidalmask_category` | Ida | NHC tidal-zone category (ordinal) |
@@ -225,7 +301,7 @@ not an independently observed date, and it is always `≤ first_sale_date`.
   semicolon-joined.
 - **Buyer type (Harvey only).** `buyer_type` classifies each sold parcel's buyer
   as `individual` / `investor` / `unknown` (`''` if it did not sell in the
-  window). Present only in `harp_harvey.npz`; Ian/Ida have no buyer field.
+  window). Present only in the Harvey release; Ian/Ida have no buyer field.
 - **Storm-specific fields.** `damage` columns vary by storm; the four `median_*`
   `acs` fields are `NaN` where the Census suppressed small-sample estimates.
   Consult `meta['damage_fields']` and `meta['acs_fields']`.
@@ -245,6 +321,13 @@ omitted — see §C). Fields marked *(storm)* appear only for the storms listed.
 | `communities` | object array of dicts | one dict per community (Census block group); requires `allow_pickle=True` |
 | `meta` | dict (0-d object array) | dataset metadata; recover with `d['meta'].item()` |
 | `time_index` | `(T,)` string array | monthly axis as `YYYY-MM`, spanning pre- and post-landfall |
+
+The three keys are the same whether a storm ships as one file or as parts. In a
+part file, `communities` holds that part's communities only and `meta` carries
+three extra keys describing the shard (§C); `time_index` is the full monthly axis
+and is repeated identically in every part. The loader in *Loading* concatenates
+the `communities` arrays in part order and drops the shard-only keys, so the
+assembled result is indistinguishable from the unsplit archive.
 
 ## B. Per-community fields (inside each `communities` dict)
 
@@ -311,9 +394,22 @@ the data and are not documented here.
 | `sale_fields` | list | keys present inside each `comm['sale']` |
 | `repair_fields` | list | keys present inside each `comm['repair']` |
 | `has_buyer_type` | `True`/`False` | whether `buyer_type` is present (Harvey only) |
-| `n_communities` | `187` | number of community dicts |
-| `n_communities_with_network` | `178` | number carrying an `A` field |
+| `n_communities` | `422` | number of community dicts |
+| `n_communities_with_network` | `405` | number carrying an `A` field |
 | `note` | text | free-text summary of the release conventions |
+
+`n_communities` and `n_communities_with_network` describe the **whole storm**, not
+the part they appear in — in a part file they stay at the dataset-wide 422 / 405.
+Three further keys appear **only** inside a part file and describe that shard:
+
+| key | example | description |
+|-----|---------|-------------|
+| `part` | `3` | 1-based index of this part |
+| `n_parts` | `4` | total parts for this storm |
+| `cbgs` | list of GEOIDs | the block groups in this part, in `communities` order |
+
+The loader in *Loading* removes all three when it reassembles, so they are absent
+from a loaded dataset.
 
 ## D. Community attributes (`acs`)
 

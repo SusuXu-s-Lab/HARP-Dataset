@@ -146,7 +146,7 @@ per-community dicts), `meta` (metadata), and `time_index` (a length-`T` array of
 | `Y` | `(T, N, 2)` | Monthly **event sequences**: `Y[t, j, 0]=1` if parcel `j` recorded a **sale** in month `t`; `Y[t, j, 1]=1` for a **repair**. Sparse (predominantly zero) |
 | `acs` | `(31,)` | Community-level **socioeconomic covariates** (population, age, income, tenure, housing) from the American Community Survey; one vector per community |
 | `damage` | `(N, D)` | Parcel-level **damage** (flood depth, estimated loss, damage level, aerial roof-damage flag, …); `D` and column names are storm-specific |
-| `buyer_type` | `(N,)` | **Buyer classification** of each parcel's sale — `individual` / `investor` / `unknown` (`''` if the parcel did not sell in the window). **Harvey only** |
+| `buyer_type` | `(N,)` | **Buyer classification** of each parcel's sale — `individual` / `investor` / `unknown` (`''` where no label is available; see *Usage notes*). **Harvey only** |
 | `A` | `(2, N, N)` | Inferred **neighborhood influence network**: `A[0]` for sales, `A[1]` for repairs; `A[i, j]` is the influence of parcel `j` on parcel `i`. Provided for communities included in model training |
 | `sale` | dict | Per-parcel **sale-event exact dates** (`first_sale_date`, `listing_date`, `sale_date_history`), each an `(N,)` `YYYY-MM-DD` string array; keys in `meta['sale_fields']` |
 | `repair` | dict | Per-parcel **repair-event exact dates & statuses** (permit / FEMA), each an `(N,)` string array; keys in `meta['repair_fields']` |
@@ -186,9 +186,9 @@ assessments, the `nhc_*` columns from National Hurricane Center storm-surge
 products (Ida), and `*_AerialDamaged` is an in-house detection on public NAIP
 imagery — a blue-tarp colour rule for Ian, and its union with a fine-tuned
 change-detection model for Ida. Fully-empty columns are dropped, so `D` differs
-by storm. For
-categorical / ordinal codes (`*_DamageLevel`, `*_Occupancy`, `nhc_*_category`) a
-value of `0` is a baseline / unknown class. A `0` in `*_AerialDamaged` means
+by storm. `*_DamageLevel` and `*_Occupancy` are categorical codes, **not severity
+ordinals**; decode them with the tables in *Decoding categorical codes* below.
+A `0` in `*_AerialDamaged` means
 the parcel was not flagged, which also covers parcels lying outside the imagery
 the detector ran on; for Ian that is 21,271 of the 202,926 parcels.
 
@@ -196,19 +196,76 @@ the detector ran on; for Ian that is 21,271 of the 202,926 parcels.
 |--------|--------|-------------|
 | `<storm>_FloodDepth` | Ian, Ida, Harvey | Flood depth at the parcel during the hurricane |
 | `<storm>_BldgValue` | Ian, Harvey | Building replacement value at time of assessment (USD) |
-| `<storm>_EstLoss` | Ian, Ida, Harvey | Estimated loss — **Ian: real USD**; **Ida / Harvey: ordinal severity code** |
-| `<storm>_Occupancy` | Ian, Ida | Occupancy type (`single_family` / `multi_family` / `manufactured_home`), categorical code |
-| `<storm>_DamageLevel` | Ian, Ida, Harvey | Damage severity level; event-specific ordinal code |
+| `<storm>_EstLoss` | Ian, Ida, Harvey | Estimated loss — **Ian: USD**; **Ida / Harvey: severity score** (see decoding tables) |
+| `<storm>_Occupancy` | Ian, Ida | Occupancy type as a categorical code (see decoding tables) |
+| `<storm>_DamageLevel` | Ian, Ida, Harvey | Damage label as a categorical code; the label set is storm-specific (see decoding tables) |
 | `<storm>_AerialDamaged` | Ian, Ida | `0/1` damage flag from aerial detection on NAIP imagery (Ian: blue tarps; Ida: blue tarps or a fine-tuned change-detection model) |
-| `nhc_surge_category` | Ida | NHC storm-surge category (ordinal) |
-| `nhc_surge_depth_ft` | Ida | NHC modeled storm-surge depth (feet) |
-| `nhc_tidalmask_category` | Ida | NHC tidal-zone category (ordinal) |
+| `nhc_surge_category` | Ida | NHC storm-surge raster category (`0`–`5`; `7` = levee-protected) |
+| `nhc_surge_depth_ft` | Ida | NHC modeled storm-surge depth (feet); `0` where none or levee-protected |
+| `nhc_tidalmask_category` | Ida | NHC tidal-mask raster category (`0`–`5`; `7` = levee; `15` = high-tide / intertidal zone) |
 
 Exact per-storm column order (`meta['damage_fields']`):
 
 - **Ian (6):** `ian_FloodDepth, ian_BldgValue, ian_EstLoss, ian_Occupancy, ian_DamageLevel, Ian_AerialDamaged`
 - **Ida (8):** `ida_FloodDepth, ida_EstLoss, nhc_surge_category, nhc_surge_depth_ft, nhc_tidalmask_category, ida_Occupancy, ida_DamageLevel, Ida_AerialDamaged`
 - **Harvey (4):** `harvey_FloodDepth, harvey_BldgValue, harvey_EstLoss, harvey_DamageLevel`
+
+### Decoding categorical codes
+
+`*_DamageLevel` and `*_Occupancy` are stored as integer codes, and `meta` does not
+carry the label tables, so use the mappings below. Codes follow **alphabetical label
+order, not severity**: code `0` is *Affected*, a damaged class, in all three storms.
+
+**`*_DamageLevel`**
+
+| code | Ian | Ida | Harvey |
+|------|-----|-----|--------|
+| 0 | Affected | Affected | Affected (`AFF`) |
+| 1 | Destroyed | Assessed | Destroyed (`DES`) |
+| 2 | Inaccessible | Destroyed | Major (`MAJ`) |
+| 3 | Major | Major | Minor (`MIN`) |
+| 4 | Minor | Minor | UNK |
+| 5 | UNK | NFIP_Claim | |
+| 6 | | No Visible Damage | |
+| 7 | | Not Building/Remove | |
+| 8 | | UNK | |
+
+*Inaccessible* marks a structure whose damage could not be visually verified;
+*UNK* marks a parcel the assessment did not reach. For Ida, *Assessed* is a parcel
+in the FEMA assessment with a blank label, and *NFIP_Claim* a parcel absent from the
+assessment but matched to an NFIP flood-insurance claim. The FEMA-damaged set
+(Affected, Minor, Major, Destroyed) is codes `{0, 1, 3, 4}` for Ian,
+`{0, 2, 3, 4}` for Ida, and `{0, 1, 2, 3}` for Harvey.
+
+**`*_EstLoss` severity score (Ida, Harvey).** Each damage label maps to exactly one
+score:
+
+| score | Ida | Harvey |
+|-------|-----|--------|
+| 0 | UNK, Not Building/Remove | UNK |
+| 1 | No Visible Damage | Affected |
+| 1.5 | Assessed | — |
+| 2 | Affected, NFIP_Claim | Minor |
+| 3 | Minor | Major |
+| 4 | Major | Destroyed |
+| 5 | Destroyed | — |
+
+**`*_Occupancy`.** Ian: `0` UNK, `1` manufactured_home, `2` multi_family,
+`3` single_family. Ida stores the county assessor's land-use code of the matched
+assessment point rather than an occupancy class. Five codes cover 99.3% of Ida
+parcels:
+
+| code | source value | meaning | Ida parcels |
+|------|--------------|---------|-------------|
+| 67 | `UNK` | no matched assessment point | 109,815 |
+| 0 | `' '` | blank in the source | 4,883 |
+| 32 | `510` | single-family dwelling | 2,512 |
+| 6 | `4000` | single-family residence | 1,933 |
+| 34 | `520` | two-family dwelling | 1,154 |
+
+The other 63 codes cover 833 parcels with other building uses (multi-family,
+commercial, religious, exempt). In both storms the value describes the matched
+assessment point, which is not necessarily the parcel itself.
 
 ---
 
@@ -275,7 +332,9 @@ the source is a 0/1 flag, not a date, so no FEMA inspection *date* is released.)
 using public Redfin zip-level DOM (with county-level fallback). For Ian and Ida the
 monthly totals are further calibrated to Redfin county new-listing counts; Harvey uses
 the plain DOM shift. It is therefore an approximation of when the parcel was listed,
-not an independently observed date, and it is always `≤ first_sale_date`.
+not an independently observed date. It precedes the close date for almost every
+parcel, but the calibration shift leaves 15 Ian parcels and 708 Ida parcels with a
+listing date after the close date.
 
 ---
 
@@ -300,10 +359,13 @@ not an independently observed date, and it is always `≤ first_sale_date`.
   sale and permit histories may predate landfall by years. Multi-record fields are
   semicolon-joined.
 - **Buyer type (Harvey only).** `buyer_type` classifies each sold parcel's buyer
-  as `individual` / `investor` / `unknown` (`''` if it did not sell in the
-  window). Present only in the Harvey release; Ian/Ida have no buyer field.
-- **Storm-specific fields.** `damage` columns vary by storm; the four `median_*`
-  `acs` fields are `NaN` where the Census suppressed small-sample estimates.
+  as `individual` / `investor` / `unknown`, and `''` means no label is available.
+  Every parcel without a sale in the window is `''`, but so are some parcels that do
+  show a sale in `Y`, so do not use `buyer_type != ''` as a sale indicator. Present
+  only in the Harvey release; Ian/Ida have no buyer field.
+- **Storm-specific fields.** `damage` columns vary by storm, and their integer
+  codes must be decoded with the tables in *Damage fields*. `acs` can contain `NaN`
+  (see Appendix §D).
   Consult `meta['damage_fields']` and `meta['acs_fields']`.
 
 ---
@@ -340,14 +402,14 @@ all of them.
 | `cbg` | scalar | str | all | 12-digit Census **block-group GEOID**; community id and join key to ACS |
 | `H` | `(N, 128)` | float32 | all | non-invertible **feature embedding** of the parcel's raw attributes |
 | `Y` | `(T, N, 2)` | int16 | all | monthly **event indicators**; `[:,:,0]`=sale, `[:,:,1]`=repair; 0/1 |
-| `acs` | `(31,)` | float32 | all | community **ACS covariates** (order = `meta['acs_fields']`); `NaN` in suppressed `median_*` |
+| `acs` | `(31,)` | float32 | all | community **ACS covariates** (order = `meta['acs_fields']`); may contain `NaN` (§D) |
 | `damage` | `(N, D)` | float32 | all | per-parcel **damage** (order = `meta['damage_fields']`); `D` storm-specific |
-| `buyer_type` | `(N,)` | str | Harvey | buyer class `individual`/`investor`/`unknown` (`''` if not sold in window) |
+| `buyer_type` | `(N,)` | str | Harvey | buyer class `individual`/`investor`/`unknown` (`''` where no label) |
 | `A` | `(2, N, N)` | float32 | trained communities | influence network; `A[0]`=sale, `A[1]`=repair; absent key if untrained |
 | `sale` | dict | all | **sale-event exact dates** (keys = `meta['sale_fields']`); see B.1 |
 | `repair` | dict | all | **repair-event exact dates & statuses** (keys = `meta['repair_fields']`); see B.2 |
 
-Every value inside `sale` / `repair` is an `(N,)` string array, row-aligned with `H`
+Every value inside `sale` / `repair` is an `(N,)` object array of Python strings, row-aligned with `H`
 (`''` where the parcel has no such record). Multi-record fields are semicolon-joined
 `YYYY-MM-DD` sequences.
 
@@ -356,7 +418,7 @@ Every value inside `sale` / `repair` is an `(N,)` string array, row-aligned with
 | field | present for | description |
 |-------|-------------|-------------|
 | `first_sale_date` | all | sale **close date** `YYYY-MM-DD` (`''` if none) |
-| `listing_date` | all | **estimated listing date** = close − Redfin DOM (`≤ first_sale_date`) |
+| `listing_date` | all | **estimated listing date** = close − Redfin DOM (normally `≤ first_sale_date`; see *Event timeline fields*) |
 | `sale_date_history` | Ian, Harvey | all sale close dates, `;`-joined |
 
 ### B.2 `repair` (inside `comm['repair']`)
@@ -417,8 +479,9 @@ from a loaded dataset.
 `meta['acs_fields'][i]` (the order below). Source: U.S. Census Bureau American
 Community Survey 5-Year estimates (Ian 2022 / Ida 2021 / Harvey 2017), at the
 block-group level, joined to each parcel through its `cbg`. Percentages are
-0–100. The four `median_*` fields can be `NaN` where the Census suppressed
-small-sample estimates; all count / percentage fields are complete.
+0–100. The `median_*` fields can be `NaN` where the Census suppressed small-sample
+estimates. Other fields are occasionally `NaN` too, most often because a community
+has no ACS match and its whole vector is missing.
 
 | # | field | description |
 |---|-------|-------------|
@@ -472,11 +535,10 @@ carries location) but exact coordinates are not released as raw values, and the
 
 ### E.1 Regrid schema (Ian, Ida)
 
-These are the Regrid source attributes **actually encoded into `H`** after
-preprocessing. Ian and Ida encode overlapping but different feature sets, marked:
-**†** = encoded for **Ida only**, **‡** = encoded for **Ian only**, unmarked =
-both. Valuation / area / distance fields are log-scaled and year fields are
-converted to age before encoding.
+These are the Regrid source attributes **that feed `H`**. **Ian's feature set is a strict subset of Ida's**, so a single mark
+suffices: **†** = encoded for **Ida only**; unmarked = encoded for **both**. No
+attribute is Ian-only. Valuation / area / distance fields are log-scaled and year
+fields are converted to age before encoding.
 
 | field | description |
 |-------|-------------|
@@ -485,27 +547,29 @@ converted to age before encoding.
 | `yearbuilt` | Structure year built (encoded as building age) |
 | `landval` | Land value (assessed value of the land) |
 | `parval` | Total parcel value |
-| `improvval` ‡ | Improvement value (assessed value of structures) |
-| `agval` ‡ | Agricultural value |
+| `improvval` | Improvement value (assessed value of structures) |
+| `agval` | Agricultural value |
 | `sqft` † | Building square footage |
-| `totalarea` ‡ | Total building area (sq ft) of the existing structure |
-| `existing_heatedarea` ‡ | Heated living area (sq ft) of the current structure |
-| `existing_bathrooms` ‡ | Number of bathrooms in the current structure |
-| `existing_bedrooms` ‡ | Number of bedrooms in the current structure |
-| `new_heatedarea` ‡ | Heated area (sq ft) of new permitted construction |
-| `new_totalarea` ‡ | Total area (sq ft) of new permitted construction |
-| `new_bathrooms` ‡ | Number of bathrooms in new permitted construction |
-| `new_bedrooms` ‡ | Number of bedrooms in new permitted construction |
-| `usecode` ‡ | Land use code assigned by the county assessor |
-| `zoning` † | Local zoning code (possible-use category) |
-| `lbcs_activity` † | LBCS Activity code — actual activity on the land |
-| `lbcs_function` † | LBCS Function code — economic function |
-| `lbcs_structure` † | LBCS Structure code — type of structure |
+| `totalarea` | Total building area (sq ft) of the existing structure |
+| `existing_heatedarea` | Heated living area (sq ft) of the current structure |
+| `existing_bathrooms` | Number of bathrooms in the current structure |
+| `existing_bedrooms` | Number of bedrooms in the current structure |
+| `new_heatedarea` | Heated area (sq ft) of new permitted construction |
+| `new_totalarea` | Total area (sq ft) of new permitted construction |
+| `new_bathrooms` | Number of bathrooms in new permitted construction |
+| `new_bedrooms` | Number of bedrooms in new permitted construction |
+| `usecode` | Land use code assigned by the county assessor |
+| `zoning` | Local zoning code (possible-use category) |
+| `lbcs_activity` | LBCS Activity code — actual activity on the land |
+| `lbcs_function` | LBCS Function code — economic function |
+| `lbcs_structure` | LBCS Structure code — type of structure |
+| `owntype` † | Ownership type code |
 | `highest_parcel_elevation` | Highest elevation (m) intersecting the parcel (USGS 10 m DEM) |
 | `lowest_parcel_elevation` | Lowest elevation (m) intersecting the parcel (USGS 10 m DEM) |
 | `roughness_rating` | Within-parcel elevation variability class (USGS 10 m DEM) |
 | `transmission_line_distance` | Distance (m) to nearest 69–765 kV transmission line |
-| `fema_nri_risk_rating` † | FEMA National Risk Index (NRI) rating |
+| `fema_nri_risk_rating` | FEMA National Risk Index (NRI) rating |
+| `fema_flood_zone` † | FEMA flood-zone designation |
 | `nhc_in_tidal_zone` † | Whether the parcel lies in the NHC tidal zone (0/1) |
 | `population_density` | Population density (per sq mi), CBG level |
 | `population_growth_past_5_years` | CAGR of population over the past 5 years, CBG level |
@@ -516,19 +580,21 @@ converted to age before encoding.
 | `median_household_income` | Median household income, previous year, CBG level |
 | `housing_affordability_index` | Housing Affordability Index (HAI), CBG level |
 
-`H` additionally encodes `pre_hurricane_repair_count` and the storm damage fields
-(see *Damage fields*). Regrid columns present in the source but not encoded in
-either embedding (`numstories`, `usedesc`, `owntype`, and the `parcelnumb` /
-`census_blockgroup` identifiers) are omitted.
+`H` additionally encodes `pre_hurricane_repair_count` (the parcel's count of
+pre-landfall repair permits) and the storm damage fields, which for Ida include
+the three `nhc_*` surge and tidal-mask columns (see *Damage fields*). Counting
+these, the source attributes span **39 columns for Ian and 46 for Ida**.
+Preprocessing transforms, merges, or drops some of them, so the encoder itself
+receives **34 columns for Ian and 32 for Ida**. Regrid columns
+present in the source but encoded in neither embedding (`numstories`, `usedesc`,
+and the `parcelnumb` / `census_blockgroup` identifiers) are omitted.
 
 ### E.2 HCAD schema (Harvey)
 
-These are the HCAD source attributes **actually encoded into Harvey's `H`** after
-preprocessing (raw HCAD columns that the pipeline drops as redundant — e.g.
-`hcad_improvval`, `hcad_tot_mkt_val`, `hcad_year_built`, `hcad_acreage`,
-`hcad_im_sqft`, `hcad_heated_area`, `hcad_bedrooms`, `hcad_full_baths`,
-`hcad_neighborhood`, `existing_heatedarea` — are **not** listed). Valuation and
-area fields are log-scaled and year fields are converted to age before encoding.
+These are the HCAD source attributes **that feed Harvey's `H`**. Harvey's schema carries two parallel valuation/area families: a set
+of unprefixed Regrid-style columns and the `hcad_`-prefixed appraisal-district
+columns. Both families are encoded. Valuation and area fields are log-scaled and
+year fields are converted to age before encoding.
 
 | field | description |
 |-------|-------------|
@@ -538,29 +604,46 @@ area fields are log-scaled and year fields are converted to age before encoding.
 | `improvval` | Improvement value (assessed value of structures) |
 | `landval` | Market land value |
 | `parval` | Total parcel value |
+| `agval` | Agricultural value |
+| `sqft` | Building square footage |
+| `totalarea` | Total parcel area (land and improvements), sq ft |
+| `existing_heatedarea` | Heated living area (sq ft) of the existing structure |
+| `existing_bathrooms` | Number of bathrooms |
+| `existing_bedrooms` | Number of bedrooms |
+| `usecode` | Land use code assigned by the county assessor |
+| `hcad_improvval` | Building value (HCAD) |
+| `hcad_landval` | Market land value (HCAD) |
 | `hcad_assessed_val` | Assessed value |
 | `hcad_tot_appr_val` | Appraised value |
+| `hcad_tot_mkt_val` | Market value |
 | `hcad_tot_rcn_val` | Total building replacement-cost value |
 | `hcad_x_features_val` | Extra-feature value (e.g. detached garage, pool) |
 | `hcad_taxable_val` | Taxable value |
-| `sqft` | Building square footage |
-| `totalarea` | Total parcel area (land and improvements), sq ft |
 | `hcad_bld_ar` | Total building area |
 | `hcad_land_ar` | Total land area (sq ft) |
-| `existing_bathrooms` | Number of bathrooms |
-| `existing_bedrooms` | Number of bedrooms |
+| `hcad_acreage` | Total land area (acres) |
+| `hcad_im_sqft` | Improvement area |
+| `hcad_heated_area` | Heated area |
+| `hcad_actual_area` | Actual area |
+| `hcad_gross_area` | Gross area |
+| `hcad_yr_impr` | Parcel year improved (encoded as years since improvement) |
+| `hcad_year_built` | Actual year built (encoded as building age) |
+| `hcad_yr_remodel` | Year remodeled (encoded as years since remodel) |
+| `hcad_bedrooms` | Number of bedrooms (HCAD) |
+| `hcad_full_baths` | Number of full bathrooms |
 | `hcad_half_baths` | Number of half bathrooms |
 | `hcad_total_rooms` | Total number of rooms |
 | `hcad_story_height` | Number of stories |
 | `hcad_fireplaces` | Number of fireplaces |
-| `hcad_yr_remodel` | Year remodeled (encoded as years since remodel) |
 | `hcad_state_class` | HCAD state / property class code |
+| `hcad_neighborhood` | HCAD neighborhood code |
 | `hcad_market_area` | HCAD primary market-area code (valuation grouping) |
 | `hcad_school_dist` | Independent School District (ISD) code |
 | `population_density` | Population density (per sq mi), CBG level |
 | `median_household_income` | Median household income, previous year, CBG level |
 
 Beyond these, `H` also encodes `pre_hurricane_repair_count` (count of the parcel's
-pre-landfall repair permits), three engineered interaction features
-(value-per-sqft, land-value-to-area ratio, and age × improvement value), and the
-storm damage fields (documented in *Damage fields*).
+pre-landfall repair permits) and the storm damage fields (documented in *Damage
+fields*), **48 source columns** in all. After preprocessing the encoder receives
+**34 columns**. The `parcelnumb` and
+`census_blockgroup` identifiers are not encoded.

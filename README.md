@@ -15,9 +15,9 @@ process.
 
 | Files | Hurricane | Region | Year | Communities | Parcels |
 |-------|-----------|--------|------|-------------|---------|
-| `harp_ian_part01.npz` … `harp_ian_part04.npz` | Ian | Lee County, FL | 2022 | 422 | 202,926 |
-| `harp_ida.npz` | Ida | Orleans Parish, LA | 2021 | 382 | 121,130 |
-| `harp_harvey_part01.npz` … `harp_harvey_part10.npz` | Harvey | Harris County, TX | 2017 | 1,992 | 1,016,927 |
+| `data/ian/harp_ian_part01.npz` … `part04.npz` | Ian | Lee County, FL | 2022 | 422 | 202,926 |
+| `data/ida/harp_ida.npz` | Ida | Orleans Parish, LA | 2021 | 382 | 121,130 |
+| `data/harvey/harp_harvey_part01.npz` … `part10.npz` | Harvey | Harris County, TX | 2017 | 1,992 | 1,016,927 |
 
 Each storm is one dataset in NumPy `.npz` form. Records are organized by **community**
 (a Census block group); within a community, each row is a single **parcel**
@@ -34,17 +34,26 @@ data (the loader below does this for you).
 
 | Storm | Files | Largest file | Total |
 |-------|-------|--------------|-------|
-| Ian | `harp_ian_part01.npz` … `harp_ian_part04.npz` (4 parts) | 48 MiB | 154 MiB |
-| Ida | `harp_ida.npz` (1 file) | 88 MiB | 88 MiB |
-| Harvey | `harp_harvey_part01.npz` … `harp_harvey_part10.npz` (10 parts) | 78 MiB | 698 MiB |
+| Ian | `data/ian/` — `harp_ian_part01.npz` … `part04.npz` (4 parts) | 48 MiB | 154 MiB |
+| Ida | `data/ida/harp_ida.npz` (1 file) | 88 MiB | 88 MiB |
+| Harvey | `data/harvey/` — `harp_harvey_part01.npz` … `part10.npz` (10 parts) | 78 MiB | 698 MiB |
+
+Repository layout:
+
+```text
+data/ian/      harp_ian_part01.npz … harp_ian_part04.npz
+data/ida/      harp_ida.npz
+data/harvey/   harp_harvey_part01.npz … harp_harvey_part10.npz
+code/          reference implementations of the derived damage and buyer-type layers
+```
 
 Nothing else is needed — the loader below is self-contained. Splitting is a pure
 container operation: the cut falls between whole communities, and no array is
 re-typed, re-scaled, or re-ordered, so the parts reassemble into a dataset
 identical to the unsplit original element for element.
 
-**License:** Creative Commons Attribution-NoDerivatives 4.0 International
-(CC BY-ND 4.0).
+**License:** Creative Commons Attribution 4.0 International
+(CC BY 4.0).
 
 ---
 
@@ -60,9 +69,9 @@ import numpy as np
 
 N_PARTS = {"ian": 4, "ida": 1, "harvey": 10}   # expected files per storm
 
-def load_harp(storm, directory="."):
-    files = sorted(glob.glob(f"{directory}/harp_{storm}_part*.npz")) \
-            or sorted(glob.glob(f"{directory}/harp_{storm}.npz"))
+def load_harp(storm, directory="data"):
+    files = sorted(glob.glob(f"{directory}/{storm}/harp_{storm}_part*.npz")) \
+            or sorted(glob.glob(f"{directory}/{storm}/harp_{storm}.npz"))
     if len(files) != N_PARTS[storm]:                       # guards against a
         raise FileNotFoundError(                           # missing download
             f"{storm}: expected {N_PARTS[storm]} file(s), found {len(files)}")
@@ -118,7 +127,7 @@ required because `communities` is an object array of dicts and `meta` a 0-d obje
 array:
 
 ```python
-d = np.load("harp_ida.npz", allow_pickle=True)
+d = np.load("data/ida/harp_ida.npz", allow_pickle=True)
 meta = d["meta"].item()
 ```
 
